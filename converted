@@ -1,0 +1,73 @@
+import numpy as np
+from scipy.fftpack import fft2, ifft2, psf2otf
+
+def L0Deblur_dark_chanel(Im, kernel, lambda_, wei_grad, kappa=2.0):
+    # pad image
+    # H = size(Im,1);    W = size(Im,2);
+    # Im = wrap_boundary_liu(Im, opt_fft_size([H W]+size(kernel)-1));
+
+    S = Im
+    betamax = 1e5
+    fx = [1, -1]
+    fy = [1, -1]
+    N, M, D = Im.shape
+    sizeI2D = (N, M)
+    otfFx = psf2otf(fx, sizeI2D)
+    otfFy = psf2otf(fy, sizeI2D)
+
+    KER = psf2otf(kernel, sizeI2D)
+    Den_KER = np.abs(KER) ** 2
+
+    Denormin2 = np.abs(otfFx) ** 2 + np.abs(otfFy) ** 2
+    if D > 1:
+        Denormin2 = np.repeat(Denormin2, (1, 1, D))
+        KER = np.repeat(KER, (1, 1, D))
+        Den_KER = np.repeat(Den_KER, (1, 1, D))
+    
+    Normin1 = np.conj(KER) * fft2(S)
+
+    # pixel sub-problem
+    dark_r = 35  # Fixed size!
+    # mybeta_pixel = 2*lambda;
+    # [J, J_idx] = dark_channel(S, dark_r);
+    mybeta_pixel = lambda_ / (graythresh((S) ** 2))
+    maxbeta_pixel = 2 ** 3
+    while mybeta_pixel < maxbeta_pixel:
+        # [J, J_idx] = dark_channel(S, dark_r);
+        J = np.min(S, axis=2)
+        J_idx = np.argmin(S, axis=2)
+        u = J
+        if D == 1:
+            t = u ** 2 < lambda_ / mybeta_pixel
+        else:
+            t = np.sum(u ** 2, axis=2) < lambda_ / mybeta_pixel
+            t = np.repeat(t, (1, 1, D))
+        u[t] = 0
+        #
+        u = assign_dark_channel_to_pixel(S, u, J_idx, dark_r)
+        # Gradient sub-problem
+        beta = 2 * wei_grad
+        # beta = 0.01;
+        while beta < betamax:
+            Denormin = Den_KER + beta * Denormin2 + mybeta_pixel
+            #
+            h = np.concatenate((S[:, 1:, :] - S[:, :-1, :], S[:, 0, :] - S[:, -1, :]), axis=1)
+            v = np.concatenate((S[1:,:,:] - S[:-1,:,:], S[0,:,:] - S[-1,:,:]), axis=0)
+            if D == 1:
+                t = (h ** 2 + v ** 2) < wei_grad / beta
+            else:
+                t = np.sum((h ** 2 + v ** 2), axis=2) < wei_grad / beta
+                t = np.repeat(t, (1, 1, D))
+            h[t] = 0
+            v[t] = 0
+            #
+            Normin2 = np.concatenate((h[:, -1, :] - h[:, 0, :], -np.diff(h, axis=1)), axis=1)
+            Normin3 = np.concatenate((v[-1, :, :] - v[0, :, :], -np.diff(v, axis=0)), axis=0)
+            FS = (Normin1 + beta * (fft2(h) + fft2(v))) / Denormin
+            S = np.real(ifft2(FS))
+            beta = beta * kappa
+        # end inner loop
+        mybeta_pixel = mybeta_pixel * kappa
+    # end outer loop
+    return S
+  
